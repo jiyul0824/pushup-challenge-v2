@@ -1,3 +1,4 @@
+import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { Ionicons } from "@expo/vector-icons";
 import Slider from "@react-native-community/slider";
 import { StatusBar } from "expo-status-bar";
@@ -16,8 +17,6 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
-  FemaleSilhouetteIcon,
-  MaleSilhouetteIcon,
   TierPushupIcon,
   type TierVisualId,
 } from "../components/onboarding-illustrations";
@@ -151,7 +150,7 @@ export default function OnboardingScreen() {
                     pressed && styles.pressed,
                   ]}
                 >
-                  <MaleSilhouetteIcon size={148} color="#ffffff" />
+                  <FontAwesome name="male" size={120} color="#ffffff" />
                   <Text style={styles.genderCardTitle}>남성</Text>
                 </Pressable>
                 <Pressable
@@ -165,7 +164,7 @@ export default function OnboardingScreen() {
                     pressed && styles.pressed,
                   ]}
                 >
-                  <FemaleSilhouetteIcon size={148} color="#ffffff" />
+                  <FontAwesome name="female" size={120} color="#ffffff" />
                   <Text style={styles.genderCardTitle}>여성</Text>
                 </Pressable>
               </View>
@@ -375,15 +374,15 @@ const styles = StyleSheet.create({
   },
   genderCard: {
     flex: 1,
-    minHeight: 240,
-    paddingVertical: 24,
+    minHeight: 280,
+    paddingVertical: 28,
     paddingHorizontal: 8,
     borderRadius: 18,
     backgroundColor: "#141414",
     borderWidth: 2.5,
     alignItems: "center",
     justifyContent: "center",
-    gap: 14,
+    gap: 16,
   },
   genderCardTitle: {
     color: "#ffffff",
