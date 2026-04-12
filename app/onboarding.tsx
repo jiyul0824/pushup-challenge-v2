@@ -15,19 +15,27 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import {
+  FemaleSilhouetteIcon,
+  MaleSilhouetteIcon,
+  TierPushupIcon,
+  type TierVisualId,
+} from "../components/onboarding-illustrations";
+
 const BG = "#0a0a0a";
 const GREEN = "#00C853";
+const WHITE_BORDER = "#ffffff";
 
 const TOTAL_STEPS = 6;
 
 const TIERS = [
-  { id: "bronze", label: "브론즈", goal: 20 },
-  { id: "silver", label: "실버", goal: 40 },
-  { id: "gold", label: "골드", goal: 70 },
-  { id: "platinum", label: "플래티넘", goal: 100 },
-  { id: "diamond", label: "다이아", goal: 150 },
-  { id: "master", label: "마스터", goal: 200 },
-] as const;
+  { id: "bronze" as const, label: "브론즈", goal: 5, color: "#CD7F32" },
+  { id: "silver" as const, label: "실버", goal: 15, color: "#B0B0B0" },
+  { id: "gold" as const, label: "골드", goal: 25, color: "#DAA520" },
+  { id: "platinum" as const, label: "플래티넘", goal: 30, color: "#20B2AA" },
+  { id: "diamond" as const, label: "다이아", goal: 40, color: "#44CCFF" },
+  { id: "master" as const, label: "마스터", goal: 60, color: "#9B30FF" },
+];
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -39,9 +47,7 @@ export default function OnboardingScreen() {
   const [age, setAge] = useState(25);
   const [heightCm, setHeightCm] = useState(170);
   const [weightKg, setWeightKg] = useState(70);
-  const [tierId, setTierId] = useState<(typeof TIERS)[number]["id"] | null>(
-    null,
-  );
+  const [tierId, setTierId] = useState<TierVisualId | null>(null);
 
   const progress = step / TOTAL_STEPS;
 
@@ -138,20 +144,28 @@ export default function OnboardingScreen() {
                   onPress={() => setGender("male")}
                   style={({ pressed }) => [
                     styles.genderCard,
-                    gender === "male" && styles.cardSelected,
+                    {
+                      borderColor:
+                        gender === "male" ? GREEN : WHITE_BORDER,
+                    },
                     pressed && styles.pressed,
                   ]}
                 >
+                  <MaleSilhouetteIcon size={148} color="#ffffff" />
                   <Text style={styles.genderCardTitle}>남성</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => setGender("female")}
                   style={({ pressed }) => [
                     styles.genderCard,
-                    gender === "female" && styles.cardSelected,
+                    {
+                      borderColor:
+                        gender === "female" ? GREEN : WHITE_BORDER,
+                    },
                     pressed && styles.pressed,
                   ]}
                 >
+                  <FemaleSilhouetteIcon size={148} color="#ffffff" />
                   <Text style={styles.genderCardTitle}>여성</Text>
                 </Pressable>
               </View>
@@ -235,12 +249,23 @@ export default function OnboardingScreen() {
                     onPress={() => setTierId(t.id)}
                     style={({ pressed }) => [
                       styles.tierCard,
-                      tierId === t.id && styles.cardSelected,
+                      {
+                        borderColor:
+                          tierId === t.id ? t.color : WHITE_BORDER,
+                      },
                       pressed && styles.pressed,
                     ]}
                   >
+                    <View style={styles.tierIconWrap}>
+                      <TierPushupIcon
+                        tier={t.id}
+                        color={t.color}
+                        width={118}
+                        height={76}
+                      />
+                    </View>
                     <Text style={styles.tierName}>{t.label}</Text>
-                    <Text style={styles.tierGoal}>목표 {t.goal}회</Text>
+                    <Text style={styles.tierGoal}>시작 {t.goal}개</Text>
                   </Pressable>
                 ))}
               </View>
@@ -350,21 +375,20 @@ const styles = StyleSheet.create({
   },
   genderCard: {
     flex: 1,
-    paddingVertical: 28,
-    borderRadius: 16,
+    minHeight: 240,
+    paddingVertical: 24,
+    paddingHorizontal: 8,
+    borderRadius: 18,
     backgroundColor: "#141414",
-    borderWidth: 2,
-    borderColor: "#2a2a2a",
+    borderWidth: 2.5,
     alignItems: "center",
     justifyContent: "center",
+    gap: 14,
   },
   genderCardTitle: {
     color: "#ffffff",
-    fontSize: 18,
+    fontSize: 19,
     fontWeight: "700",
-  },
-  cardSelected: {
-    borderColor: GREEN,
   },
   valueLarge: {
     color: GREEN,
@@ -397,18 +421,23 @@ const styles = StyleSheet.create({
   },
   tierCard: {
     width: "48%",
-    paddingVertical: 20,
-    paddingHorizontal: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
     borderRadius: 16,
     backgroundColor: "#141414",
-    borderWidth: 2,
-    borderColor: "#2a2a2a",
+    borderWidth: 2.5,
+  },
+  tierIconWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+    minHeight: 78,
   },
   tierName: {
     color: "#ffffff",
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "800",
-    marginBottom: 6,
+    marginBottom: 4,
   },
   tierGoal: {
     color: "rgba(255,255,255,0.55)",
