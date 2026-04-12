@@ -5,15 +5,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 const BG = "#0a0a0a";
 const GREEN = "#00C853";
 
-/** 초기 설정 완료 후 이동하는 임시 메인 화면 */
-export default function HomeScreen() {
+export default function StartTabScreen() {
   const insets = useSafeAreaInsets();
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <StatusBar style="light" />
-      <Text style={styles.title}>PUSHUP CHALLENGE</Text>
-      <Text style={styles.sub}>초기 설정이 완료되었습니다</Text>
+      <Text style={styles.title}>푸쉬업 시작</Text>
+      <Text style={styles.sub}>세션 화면은 다음 단계에서 연결할 수 있어요</Text>
     </View>
   );
 }
@@ -30,11 +29,11 @@ const styles = StyleSheet.create({
     color: GREEN,
     fontSize: 22,
     fontWeight: "800",
-    letterSpacing: 1,
   },
   sub: {
-    color: "rgba(255,255,255,0.55)",
+    color: "rgba(255,255,255,0.5)",
     fontSize: 15,
-    marginTop: 12,
+    marginTop: 10,
+    textAlign: "center",
   },
 });
