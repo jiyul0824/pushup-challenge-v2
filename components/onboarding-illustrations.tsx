@@ -9,13 +9,9 @@ import Svg, {
   Stop,
 } from "react-native-svg";
 
-export type TierVisualId =
-  | "bronze"
-  | "silver"
-  | "gold"
-  | "platinum"
-  | "diamond"
-  | "master";
+import type { TierVisualId } from "../constants/tiers";
+
+export type { TierVisualId };
 
 type PushupIconProps = {
   width?: number;

@@ -16,25 +16,14 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import {
-  TierPushupIcon,
-  type TierVisualId,
-} from "../components/onboarding-illustrations";
+import { TierPushupIcon } from "../components/onboarding-illustrations";
+import { TIERS, type TierVisualId } from "../constants/tiers";
 
 const BG = "#0a0a0a";
 const GREEN = "#00C853";
 const WHITE_BORDER = "#ffffff";
 
 const TOTAL_STEPS = 6;
-
-const TIERS = [
-  { id: "bronze" as const, label: "브론즈", goal: 5, color: "#CD7F32" },
-  { id: "silver" as const, label: "실버", goal: 15, color: "#B0B0B0" },
-  { id: "gold" as const, label: "골드", goal: 25, color: "#DAA520" },
-  { id: "platinum" as const, label: "플래티넘", goal: 30, color: "#20B2AA" },
-  { id: "diamond" as const, label: "다이아", goal: 40, color: "#44CCFF" },
-  { id: "master" as const, label: "마스터", goal: 60, color: "#9B30FF" },
-];
 
 export default function OnboardingScreen() {
   const router = useRouter();
