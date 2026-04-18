@@ -1,12 +1,12 @@
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
+import * as Haptics from "expo-haptics";
 import type { ComponentProps } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useTheme } from "../contexts/theme";
 
-const BG = "#0a0a0a";
 const GREEN = "#00C853";
-const INACTIVE = "rgba(255,255,255,0.42)";
 
 const ICON_SIZE = 24;
 const FAB_SIZE = 68;
@@ -29,6 +29,8 @@ export function MainTabBar({
   navigation,
 }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const INACTIVE = "rgba(255,255,255,0.42)";
 
   const activeName = state.routes[state.index]?.name;
   const orderedRoutes = TAB_ORDER.map((name) =>
@@ -42,6 +44,8 @@ export function MainTabBar({
         {
           paddingBottom: Math.max(insets.bottom, 10),
           paddingTop: 10,
+          backgroundColor: colors.bg,
+          borderTopColor: colors.border,
         },
       ]}
     >
@@ -55,7 +59,7 @@ export function MainTabBar({
                 <Pressable
                   accessibilityRole="button"
                   accessibilityState={{ selected: isFocused }}
-                  onPress={() => navigation.navigate(route.name)}
+                  onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); navigation.navigate(route.name); }}
                   style={({ pressed }) => [
                     styles.fab,
                     isFocused && styles.fabActive,
@@ -78,7 +82,7 @@ export function MainTabBar({
               key={route.key}
               accessibilityRole="button"
               accessibilityState={{ selected: isFocused }}
-              onPress={() => navigation.navigate(route.name)}
+              onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); navigation.navigate(route.name); }}
               style={({ pressed }) => [
                 styles.tabSlot,
                 pressed && styles.pressed,
@@ -95,9 +99,7 @@ export function MainTabBar({
 
 const styles = StyleSheet.create({
   wrap: {
-    backgroundColor: BG,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#2a2a2a",
   },
   row: {
     flexDirection: "row",
