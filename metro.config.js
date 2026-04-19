@@ -4,6 +4,9 @@ const { getDefaultConfig } = require("expo/metro-config");
 /** @type {import('expo/metro-config').MetroConfig} */
 const config = getDefaultConfig(__dirname);
 
+// Allow bundling .tflite model files as assets
+config.resolver.assetExts.push("tflite");
+
 /**
  * react-native-svg는 package.json의 "react-native": "src/index.ts" 때문에
  * Metro가 src를 따라가며 일부 서브경로(extractBrush 등) 해석에 실패할 수 있음.
