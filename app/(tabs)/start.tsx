@@ -10,10 +10,41 @@ import {
   useCameraPermission,
   useFrameProcessor,
 } from "react-native-vision-camera";
-import { useTensorflowModel } from "react-native-fast-tflite";
-import { NitroModules } from "react-native-nitro-modules";
-import { useResizePlugin } from "vision-camera-resize-plugin";
 import { runOnJS } from "react-native-reanimated";
+
+// ─────────────────────────────────────────────────────────────
+// Native ML 모듈 안전 로딩
+// react-native-nitro-modules 는 모듈 평가 시점에 TurboModuleRegistry.
+// getEnforcing() 를 실행한다. 네이티브 빌드에 포함되지 않았을 때 throw 하면
+// start.tsx 자체가 import 실패 → 탭 라우트가 등록되지 않는 문제를 방지하기
+// 위해 dynamic require + try-catch IIFE 로 로딩한다.
+// ─────────────────────────────────────────────────────────────
+type TflitePlugin =
+  | { state: "loading"; model: undefined }
+  | { state: "loaded";  model: { runSync(i: ArrayBuffer[]): ArrayBuffer[] } }
+  | { state: "error";   model: undefined; error: Error };
+
+const { useTFModel, boxModel, resizePlugin } = (() => {
+  try {
+    const tflite  = require("react-native-fast-tflite") as { useTensorflowModel: (src: ReturnType<typeof require>) => TflitePlugin };
+    const nitro   = require("react-native-nitro-modules") as { NitroModules: { box(m: unknown): { unbox(): { runSync(i: ArrayBuffer[]): ArrayBuffer[] } } } };
+    const resize  = require("vision-camera-resize-plugin") as { useResizePlugin(): { resize: (frame: unknown, opts: unknown) => Uint8Array } };
+    return {
+      useTFModel:   tflite.useTensorflowModel,
+      boxModel:     (m: unknown) => nitro.NitroModules.box(m),
+      resizePlugin: resize.useResizePlugin,
+    };
+  } catch (e) {
+    console.warn("[start] ML 네이티브 모듈 불가 – 직접 시작하기만 동작합니다:", e);
+    return {
+      useTFModel:   (_: unknown): TflitePlugin => ({ state: "error", model: undefined, error: e as Error }),
+      boxModel:     (_: unknown) => null,
+      resizePlugin: () => ({ resize: () => new Uint8Array(0) }),
+    };
+  }
+})();
+
+// ─────────────────────────────────────────────────────────────
 
 const GREEN  = "#00C853";
 const ORANGE = "#f97316";
@@ -23,9 +54,9 @@ type Phase     = "WAITING" | "READY" | "COUNTDOWN" | "COUNTING" | "DONE";
 type PoseState = "UP" | "DOWN" | "NONE";
 
 // MoveNet keypoint 인덱스 (COCO 순서)
-const IDX_LS = 5, IDX_RS = 6; // shoulders
-const IDX_LE = 7, IDX_RE = 8; // elbows
-const IDX_LW = 9, IDX_RW = 10; // wrists
+const IDX_LS = 5, IDX_RS = 6;
+const IDX_LE = 7, IDX_RE = 8;
+const IDX_LW = 9, IDX_RW = 10;
 
 function calcAngle(
   ax: number, ay: number,
@@ -80,21 +111,22 @@ export default function StartTabScreen() {
     ]).start();
   }, [countScale]);
 
-  // ── MoveNet 모델 로드 ──
-  const plugin = useTensorflowModel(
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require("../../assets/models/movenet_lightning.tflite")
-  );
+  // ── MoveNet 모델 (안전 로딩) ──
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const plugin = useTFModel(require("../../assets/models/movenet_lightning.tflite"));
 
-  // ── nitro-modules box: worklet 스레드에서 모델 접근 가능하게 ──
-  const boxedModel = useMemo(
-    () => (plugin.state === "loaded" ? NitroModules.box(plugin.model) : undefined),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [plugin.state]
-  );
+  // ── boxedModel: worklet 스레드 접근용 ──
+  const boxedModel = useMemo(() => {
+    if (plugin.state !== "loaded") return null;
+    try { return boxModel(plugin.model); }
+    catch { return null; }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plugin.state]);
 
-  const { resize } = useResizePlugin();
+  // ── resize plugin (안전 로딩) ──
+  const { resize } = resizePlugin();
 
+  // ── 수동 시작 ──
   const startManually = useCallback(() => {
     if (phaseRef.current !== "WAITING") return;
     phaseRef.current = "READY";
@@ -102,18 +134,18 @@ export default function StartTabScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   }, []);
 
-  // ── pose 데이터 → JS 스레드 처리 ──
+  // ── pose 콜백 (JS 스레드) ──
   const onPoseData = useCallback(
     (visibleCount: number, maxScore: number, lAngle: number, rAngle: number) => {
       const elbow = Math.min(lAngle, rAngle);
       setElbowAngle(Math.round(elbow));
 
       if (phaseRef.current === "WAITING") {
-        if (visibleCount === 0) {
-          setDebugText("인식 없음 — 카메라와 1~2m 거리에서 정면을 보세요");
-        } else {
-          setDebugText(`신체 감지됨 (${visibleCount}개 포인트, 신뢰도 ${Math.round(maxScore * 100)}%)`);
-        }
+        setDebugText(
+          visibleCount === 0
+            ? "인식 없음 — 카메라와 1~2m 거리에서 정면을 보세요"
+            : `신체 감지됨 (${visibleCount}개 포인트, 신뢰도 ${Math.round(maxScore * 100)}%)`
+        );
         if (visibleCount >= 2 && maxScore > 0.25) {
           phaseRef.current = "READY";
           setPhase("READY");
@@ -146,21 +178,19 @@ export default function StartTabScreen() {
       "worklet";
       if (boxedModel == null) return;
 
-      // 192×192 RGB uint8로 리사이즈
       const resized = resize(frame, {
         scale: { width: 192, height: 192 },
         pixelFormat: "rgb",
         dataType: "uint8",
       });
 
-      // TypedArray → slice (byteOffset 보정)
-      const inputBuffer = resized.buffer.slice(
-        resized.byteOffset,
-        resized.byteOffset + resized.byteLength
+      const inputBuffer = (resized as Uint8Array).buffer.slice(
+        (resized as Uint8Array).byteOffset,
+        (resized as Uint8Array).byteOffset + (resized as Uint8Array).byteLength
       );
 
-      const tflite  = boxedModel.unbox();
-      const outputs = tflite.runSync([inputBuffer]);
+      const tflite  = (boxedModel as { unbox(): { runSync(i: ArrayBuffer[]): ArrayBuffer[] } }).unbox();
+      const outputs = tflite.runSync([inputBuffer as ArrayBuffer]);
 
       const raw = outputs[0];
       if (raw == null) return;
@@ -192,11 +222,7 @@ export default function StartTabScreen() {
   // READY → COUNTDOWN
   useEffect(() => {
     if (phase !== "READY") return;
-    const t = setTimeout(() => {
-      phaseRef.current = "COUNTDOWN";
-      setPhase("COUNTDOWN");
-      setCountdown(3);
-    }, 1200);
+    const t = setTimeout(() => { phaseRef.current = "COUNTDOWN"; setPhase("COUNTDOWN"); setCountdown(3); }, 1200);
     return () => clearTimeout(t);
   }, [phase]);
 
@@ -204,19 +230,16 @@ export default function StartTabScreen() {
   useEffect(() => {
     if (phase !== "COUNTDOWN") return;
     if (countdown <= 0) {
-      phaseRef.current     = "COUNTING";
+      phaseRef.current = "COUNTING";
       poseStateRef.current = "NONE";
-      countRef.current     = 0;
+      countRef.current = 0;
       setPhase("COUNTING");
       setPoseState("NONE");
       setCount(0);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       return;
     }
-    const t = setTimeout(() => {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      setCountdown((n) => n - 1);
-    }, 1000);
+    const t = setTimeout(() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setCountdown((n) => n - 1); }, 1000);
     return () => clearTimeout(t);
   }, [phase, countdown]);
 
@@ -251,12 +274,12 @@ export default function StartTabScreen() {
         style={StyleSheet.absoluteFill}
         device={device}
         isActive
-        frameProcessor={phase !== "DONE" ? frameProcessor : undefined}
+        frameProcessor={phase !== "DONE" && boxedModel != null ? frameProcessor : undefined}
         pixelFormat="yuv"
       />
       <View style={styles.overlay} />
 
-      {/* WAITING */}
+      {/* ── WAITING ── */}
       {phase === "WAITING" && (
         <>
           <View style={[styles.topSection, { paddingTop: insets.top + 32 }]}>
@@ -267,7 +290,7 @@ export default function StartTabScreen() {
               <Animated.View style={[styles.circleInner, { opacity: pulse }]} />
             </View>
             {plugin.state === "loading" && <Text style={styles.modelLoadText}>⏳ AI 모델 준비 중...</Text>}
-            {plugin.state === "error"   && <Text style={styles.modelErrorText}>⚠ 모델 로딩 실패</Text>}
+            {plugin.state === "error"   && <Text style={styles.modelErrorText}>⚠ 자동 감지 불가 — 직접 시작하기를 눌러주세요</Text>}
             {plugin.state === "loaded"  && <Text style={styles.debugText}>{debugText}</Text>}
           </View>
           <View style={[styles.manualStartWrap, { paddingBottom: insets.bottom + 100 }]}>
@@ -281,7 +304,7 @@ export default function StartTabScreen() {
         </>
       )}
 
-      {/* READY */}
+      {/* ── READY ── */}
       {phase === "READY" && (
         <View style={styles.middleSection}>
           <Text style={styles.bigEmoji}>✅</Text>
@@ -290,7 +313,7 @@ export default function StartTabScreen() {
         </View>
       )}
 
-      {/* COUNTDOWN */}
+      {/* ── COUNTDOWN ── */}
       {phase === "COUNTDOWN" && (
         <View style={styles.middleSection}>
           <Text style={styles.countdownNum}>{countdown}</Text>
@@ -298,7 +321,7 @@ export default function StartTabScreen() {
         </View>
       )}
 
-      {/* COUNTING */}
+      {/* ── COUNTING ── */}
       {phase === "COUNTING" && (
         <>
           <View style={[styles.topSection, { paddingTop: insets.top + 16 }]}>
@@ -323,7 +346,7 @@ export default function StartTabScreen() {
         </>
       )}
 
-      {/* DONE */}
+      {/* ── DONE ── */}
       {phase === "DONE" && (
         <View style={styles.middleSection}>
           <Text style={styles.bigEmoji}>🎉</Text>
@@ -334,7 +357,7 @@ export default function StartTabScreen() {
         </View>
       )}
 
-      {/* 하단 버튼 */}
+      {/* ── 하단 버튼 ── */}
       <View style={[styles.bottomSection, { paddingBottom: insets.bottom + 24 }]}>
         {phase === "COUNTING" && (
           <Pressable
@@ -378,8 +401,8 @@ const styles = StyleSheet.create({
   circleOuter:    { width: 120, height: 120, borderRadius: 60, borderWidth: 3, borderColor: GREEN, alignItems: "center", justifyContent: "center" },
   circleInner:    { width: 90,  height: 90,  borderRadius: 45, backgroundColor: GREEN },
   modelLoadText:  { color: "rgba(255,255,255,0.45)", fontSize: 12, fontWeight: "500" },
-  modelErrorText: { color: "#ff3b30", fontSize: 12, fontWeight: "600" },
-  debugText:      { color: "rgba(255,255,255,0.5)", fontSize: 12, fontWeight: "500", textAlign: "center", paddingHorizontal: 24 },
+  modelErrorText: { color: "rgba(255,200,0,0.85)", fontSize: 12, fontWeight: "600", textAlign: "center", paddingHorizontal: 24 },
+  debugText:      { color: "rgba(255,255,255,0.5)",  fontSize: 12, fontWeight: "500", textAlign: "center", paddingHorizontal: 24 },
 
   manualStartWrap: { paddingHorizontal: 32, width: "100%" },
   manualStartBtn:  { borderWidth: 1.5, borderColor: GREEN, borderRadius: 14, paddingVertical: 14, alignItems: "center" },
