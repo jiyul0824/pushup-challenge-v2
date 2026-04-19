@@ -41,7 +41,7 @@
       [
         "react-native-vision-camera",
         {
-          "cameraPermission": "손바닥 및 자세 인식을 위해 카메라 접근 권한이 필요합니다.",
+          "cameraPermission": "자세 인식을 위해 카메라 접근 권한이 필요합니다.",
           "enableFrameProcessors": true
         }
       ],

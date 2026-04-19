@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as Haptics from "expo-haptics";
@@ -11,6 +11,8 @@ import {
   useFrameProcessor,
 } from "react-native-vision-camera";
 import { useTensorflowModel } from "react-native-fast-tflite";
+import { NitroModules } from "react-native-nitro-modules";
+import { useResizePlugin } from "vision-camera-resize-plugin";
 import { runOnJS } from "react-native-reanimated";
 
 const GREEN  = "#00C853";
@@ -55,6 +57,7 @@ export default function StartTabScreen() {
   const [count,      setCount]      = useState(0);
   const [poseState,  setPoseState]  = useState<PoseState>("NONE");
   const [elbowAngle, setElbowAngle] = useState(180);
+  const [debugText,  setDebugText]  = useState("카메라 분석 중...");
 
   // worklet → JS 간 stale closure 방지용 ref
   const phaseRef     = useRef<Phase>("WAITING");
@@ -87,13 +90,20 @@ export default function StartTabScreen() {
   }, [countScale]);
 
   // ── MoveNet 모델 로드 ──
-  const model = useTensorflowModel(
+  const plugin = useTensorflowModel(
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     require("../../assets/models/movenet_lightning.tflite")
   );
 
-  // 실시간 감지 디버그 텍스트 (WAITING 화면에 표시)
-  const [debugText, setDebugText] = useState("카메라 분석 중...");
+  // ── fast-tflite v3: NitroModules.box() 로 worklet 접근 가능하게 래핑 ──
+  const boxedModel = useMemo(
+    () => (plugin.state === "loaded" ? NitroModules.box(plugin.model) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [plugin.state]
+  );
+
+  // ── vision-camera-resize-plugin 초기화 ──
+  const { resize } = useResizePlugin();
 
   // 수동 시작 함수
   const startManually = useCallback(() => {
@@ -106,7 +116,6 @@ export default function StartTabScreen() {
   // ── 프레임 처리 결과 → JS 스레드 콜백 ──
   const onPoseData = useCallback(
     (visibleCount: number, maxScore: number, lAngle: number, rAngle: number) => {
-      // 두 팔 중 더 굽혀진(낮은) 각도를 기준으로 사용
       const elbow = Math.min(lAngle, rAngle);
       setElbowAngle(Math.round(elbow));
 
@@ -117,9 +126,6 @@ export default function StartTabScreen() {
         } else {
           setDebugText(`신체 감지됨 (${visibleCount}개 포인트, 신뢰도 ${Math.round(maxScore * 100)}%)`);
         }
-
-        // keypoint 2개 이상 감지 → READY (MoveNet은 전신 감지 모델이므로
-        // 손바닥 클로즈업이 아닌 상체가 보여야 작동함)
         if (visibleCount >= 2 && maxScore > 0.25) {
           phaseRef.current = "READY";
           setPhase("READY");
@@ -147,24 +153,39 @@ export default function StartTabScreen() {
     [bouncCount]
   );
 
-  // ── 프레임 프로세서 (카메라 스레드 / worklet) ──
+  // ── 프레임 프로세서 ──
   const frameProcessor = useFrameProcessor(
     (frame) => {
       "worklet";
-      if (model.state !== "loaded") return;
+      if (boxedModel == null) return;
 
-      // MoveNet 추론: 출력 shape [1,1,17,3] → Float32Array 51개 값
-      const outputs = model.model.runSync([frame]);
-      const kps = outputs[0] as Float32Array;
+      // 1. 프레임을 192×192 RGB uint8로 리사이즈
+      const resized = resize(frame, {
+        scale: { width: 192, height: 192 },
+        pixelFormat: "rgb",
+        dataType: "uint8",
+      });
 
-      // 헬퍼
+      // 2. TypedArray → 슬라이스된 ArrayBuffer 추출 (byteOffset 보정)
+      const inputBuffer = resized.buffer.slice(
+        resized.byteOffset,
+        resized.byteOffset + resized.byteLength
+      );
+
+      // 3. model unbox → runSync
+      const tflite = boxedModel.unbox();
+      const outputs = tflite.runSync([inputBuffer]);
+
+      // 4. MoveNet 출력 파싱: shape [1,1,17,3] → Float32 51개 값
+      const raw  = outputs[0];
+      if (raw == null) return;
+      const kps  = new Float32Array(raw);
+
       const score = (i: number) => kps[i * 3 + 2];
-      const kx    = (i: number) => kps[i * 3 + 1];
-      const ky    = (i: number) => kps[i * 3];
+      const kx    = (i: number) => kps[i * 3 + 1]; // x
+      const ky    = (i: number) => kps[i * 3];      // y
 
-      const CONF = 0.20; // 낮은 임계값 — 상체만 보여도 감지
-
-      // 17개 keypoint 중 CONF 이상인 것 카운트 + 최대 신뢰도
+      const CONF = 0.20;
       let visibleCount = 0;
       let maxScore = 0;
       for (let i = 0; i < 17; i++) {
@@ -173,7 +194,6 @@ export default function StartTabScreen() {
         if (s > maxScore) maxScore = s;
       }
 
-      // 팔꿈치 각도: shoulder → elbow → wrist
       const ARM_CONF = 0.25;
       const lOk = score(IDX_LS) > ARM_CONF && score(IDX_LE) > ARM_CONF && score(IDX_LW) > ARM_CONF;
       const rOk = score(IDX_RS) > ARM_CONF && score(IDX_RE) > ARM_CONF && score(IDX_RW) > ARM_CONF;
@@ -187,7 +207,7 @@ export default function StartTabScreen() {
 
       runOnJS(onPoseData)(visibleCount, maxScore, lAngle, rAngle);
     },
-    [model, onPoseData]
+    [boxedModel, resize, onPoseData]
   );
 
   // ── READY → COUNTDOWN (1.2초 후) ──
@@ -254,7 +274,7 @@ export default function StartTabScreen() {
         device={device}
         isActive
         frameProcessor={phase !== "DONE" ? frameProcessor : undefined}
-        pixelFormat="rgb"
+        pixelFormat="yuv"
       />
       <View style={styles.overlay} />
 
@@ -270,19 +290,18 @@ export default function StartTabScreen() {
               <Animated.View style={[styles.circleInner, { opacity: pulse }]} />
             </View>
 
-            {/* 모델 상태 */}
-            {model.state === "loading" && (
+            {plugin.state === "loading" && (
               <Text style={styles.modelLoadText}>⏳ AI 모델 준비 중...</Text>
             )}
-            {model.state === "error" && (
+            {plugin.state === "error" && (
               <Text style={styles.modelErrorText}>⚠ 모델 로딩 실패</Text>
             )}
-            {model.state === "loaded" && (
+            {plugin.state === "loaded" && (
               <Text style={styles.debugText}>{debugText}</Text>
             )}
           </View>
 
-          {/* 직접 시작 버튼 (자동 인식 안 될 때 백업) */}
+          {/* 직접 시작 버튼 */}
           <View style={[styles.manualStartWrap, { paddingBottom: insets.bottom + 100 }]}>
             <Pressable
               style={({ pressed }) => [styles.manualStartBtn, pressed && { opacity: 0.8 }]}
@@ -315,7 +334,6 @@ export default function StartTabScreen() {
       {phase === "COUNTING" && (
         <>
           <View style={[styles.topSection, { paddingTop: insets.top + 16 }]}>
-            {/* 상태 배지 */}
             <View style={[
               styles.stateBadge,
               poseState === "DOWN"
@@ -329,11 +347,9 @@ export default function StartTabScreen() {
                 {poseState === "DOWN" ? "⬇  DOWN" : poseState === "UP" ? "⬆  UP" : "시작!"}
               </Text>
             </View>
-            {/* 팔꿈치 각도 표시 */}
             <Text style={styles.angleText}>팔꿈치 각도  {elbowAngle}°</Text>
           </View>
 
-          {/* 카운트 숫자 */}
           <View style={styles.middleSection}>
             <Animated.Text
               style={[styles.bigCount, { transform: [{ scale: countScale }] }]}
@@ -358,7 +374,6 @@ export default function StartTabScreen() {
 
       {/* ────────── 하단 버튼 ────────── */}
       <View style={[styles.bottomSection, { paddingBottom: insets.bottom + 24 }]}>
-        {/* 카운팅 중 → 완료 버튼 */}
         {phase === "COUNTING" && (
           <Pressable
             style={({ pressed }) => [styles.doneBtn, pressed && { opacity: 0.85 }]}
@@ -372,7 +387,6 @@ export default function StartTabScreen() {
           </Pressable>
         )}
 
-        {/* DONE → 홈 버튼 / 그 외 → 취소 버튼 */}
         {phase === "DONE" ? (
           <Pressable
             style={({ pressed }) => [styles.doneBtn, pressed && { opacity: 0.85 }]}
@@ -405,18 +419,14 @@ const styles = StyleSheet.create({
   center:  { alignItems: "center", justifyContent: "center", paddingHorizontal: 32, gap: 20 },
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.42)" },
 
-  /* 레이아웃 섹션 */
   topSection:    { alignItems: "center", paddingHorizontal: 24, gap: 10 },
   middleSection: { flex: 1, alignItems: "center", justifyContent: "center", gap: 16 },
   bottomSection: { alignItems: "center", gap: 12, paddingHorizontal: 24 },
 
-  /* 가이드 */
   guideText: { color: "#fff", fontSize: 18, fontWeight: "700", textAlign: "center", letterSpacing: 0.3 },
 
-  /* WAITING */
   circleOuter:    { width: 120, height: 120, borderRadius: 60, borderWidth: 3, borderColor: GREEN, alignItems: "center", justifyContent: "center" },
   circleInner:    { width: 90, height: 90, borderRadius: 45, backgroundColor: GREEN },
-  waitingText:    { color: GREEN, fontSize: 14, fontWeight: "600", letterSpacing: 0.5 },
   modelLoadText:  { color: "rgba(255,255,255,0.45)", fontSize: 12, fontWeight: "500" },
   modelErrorText: { color: "#ff3b30", fontSize: 12, fontWeight: "600" },
   debugText:      { color: "rgba(255,255,255,0.5)", fontSize: 12, fontWeight: "500", textAlign: "center", paddingHorizontal: 24 },
@@ -429,19 +439,16 @@ const styles = StyleSheet.create({
   },
   manualStartText: { color: GREEN, fontSize: 15, fontWeight: "700" },
 
-  /* READY */
   bigEmoji:  { fontSize: 72 },
   readyText: { color: "#fff", fontSize: 32, fontWeight: "900" },
   subText:   { color: "rgba(255,255,255,0.65)", fontSize: 15, fontWeight: "500" },
 
-  /* COUNTDOWN */
   countdownNum: {
     color: GREEN, fontSize: 130, fontWeight: "900",
     lineHeight: 140, letterSpacing: -4,
     textShadowColor: "rgba(0,200,83,0.5)", textShadowOffset: { width: 0, height: 0 }, textShadowRadius: 30,
   },
 
-  /* COUNTING */
   stateBadge: { borderRadius: 22, borderWidth: 1.5, paddingHorizontal: 28, paddingVertical: 10 },
   stateText:  { fontSize: 20, fontWeight: "800", letterSpacing: 0.5 },
   angleText:  { color: "rgba(255,255,255,0.45)", fontSize: 13, fontWeight: "600" },
@@ -452,18 +459,15 @@ const styles = StyleSheet.create({
   },
   bigCountUnit: { color: "rgba(255,255,255,0.55)", fontSize: 36, fontWeight: "700", marginTop: -20 },
 
-  /* DONE */
   doneTitle:     { color: "#fff", fontSize: 42, fontWeight: "900" },
   doneCount:     { color: GREEN, fontSize: 90, fontWeight: "900", lineHeight: 100, letterSpacing: -3 },
   doneCountUnit: { color: "rgba(0,200,83,0.7)", fontSize: 28, fontWeight: "700", marginTop: -12 },
 
-  /* 버튼 */
   doneBtn:     { backgroundColor: GREEN, borderRadius: 16, paddingVertical: 18, paddingHorizontal: 48, width: "100%", alignItems: "center" },
   doneBtnText: { color: "#000", fontSize: 17, fontWeight: "800" },
   cancelBtn:   { paddingVertical: 14, paddingHorizontal: 48, borderRadius: 30, borderWidth: 1.5, borderColor: "rgba(255,255,255,0.35)" },
   cancelText:  { color: "#fff", fontSize: 16, fontWeight: "600" },
 
-  /* 권한 */
   permText:    { color: "#fff", fontSize: 16, fontWeight: "600", textAlign: "center" },
   permBtn:     { backgroundColor: GREEN, paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12 },
   permBtnText: { color: "#fff", fontSize: 15, fontWeight: "700" },
