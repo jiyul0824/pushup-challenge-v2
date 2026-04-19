@@ -92,18 +92,39 @@ export default function StartTabScreen() {
     require("../../assets/models/movenet_lightning.tflite")
   );
 
+  // 실시간 감지 디버그 텍스트 (WAITING 화면에 표시)
+  const [debugText, setDebugText] = useState("카메라 분석 중...");
+
+  // 수동 시작 함수
+  const startManually = useCallback(() => {
+    if (phaseRef.current !== "WAITING") return;
+    phaseRef.current = "READY";
+    setPhase("READY");
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }, []);
+
   // ── 프레임 처리 결과 → JS 스레드 콜백 ──
   const onPoseData = useCallback(
-    (handDetected: boolean, lAngle: number, rAngle: number) => {
+    (visibleCount: number, maxScore: number, lAngle: number, rAngle: number) => {
       // 두 팔 중 더 굽혀진(낮은) 각도를 기준으로 사용
       const elbow = Math.min(lAngle, rAngle);
       setElbowAngle(Math.round(elbow));
 
-      // ① WAITING: 손이 감지되면 → READY
-      if (phaseRef.current === "WAITING" && handDetected) {
-        phaseRef.current = "READY";
-        setPhase("READY");
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // ① WAITING: 디버그 텍스트 업데이트
+      if (phaseRef.current === "WAITING") {
+        if (visibleCount === 0) {
+          setDebugText("인식 없음 — 카메라와 1~2m 거리에서 정면을 보세요");
+        } else {
+          setDebugText(`신체 감지됨 (${visibleCount}개 포인트, 신뢰도 ${Math.round(maxScore * 100)}%)`);
+        }
+
+        // keypoint 2개 이상 감지 → READY (MoveNet은 전신 감지 모델이므로
+        // 손바닥 클로즈업이 아닌 상체가 보여야 작동함)
+        if (visibleCount >= 2 && maxScore > 0.25) {
+          phaseRef.current = "READY";
+          setPhase("READY");
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
         return;
       }
 
@@ -111,12 +132,10 @@ export default function StartTabScreen() {
       if (phaseRef.current !== "COUNTING") return;
 
       if (elbow < 90 && poseStateRef.current !== "DOWN") {
-        // DOWN 상태 진입
         poseStateRef.current = "DOWN";
         setPoseState("DOWN");
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       } else if (elbow > 160 && poseStateRef.current === "DOWN") {
-        // DOWN → UP: 푸쉬업 1회 완성
         poseStateRef.current = "UP";
         setPoseState("UP");
         countRef.current += 1;
@@ -138,18 +157,27 @@ export default function StartTabScreen() {
       const outputs = model.model.runSync([frame]);
       const kps = outputs[0] as Float32Array;
 
-      // 헬퍼: keypoint 인덱스 → score / x / y (값 범위 0~1)
+      // 헬퍼
       const score = (i: number) => kps[i * 3 + 2];
       const kx    = (i: number) => kps[i * 3 + 1];
       const ky    = (i: number) => kps[i * 3];
 
-      const CONF = 0.35; // 최소 신뢰도 임계값
-      const HAND = 0.55; // 손 감지 임계값
+      const CONF = 0.20; // 낮은 임계값 — 상체만 보여도 감지
 
-      const lOk = score(IDX_LS) > CONF && score(IDX_LE) > CONF && score(IDX_LW) > CONF;
-      const rOk = score(IDX_RS) > CONF && score(IDX_RE) > CONF && score(IDX_RW) > CONF;
+      // 17개 keypoint 중 CONF 이상인 것 카운트 + 최대 신뢰도
+      let visibleCount = 0;
+      let maxScore = 0;
+      for (let i = 0; i < 17; i++) {
+        const s = score(i);
+        if (s > CONF) visibleCount++;
+        if (s > maxScore) maxScore = s;
+      }
 
-      // 왼쪽/오른쪽 팔꿈치 각도 계산
+      // 팔꿈치 각도: shoulder → elbow → wrist
+      const ARM_CONF = 0.25;
+      const lOk = score(IDX_LS) > ARM_CONF && score(IDX_LE) > ARM_CONF && score(IDX_LW) > ARM_CONF;
+      const rOk = score(IDX_RS) > ARM_CONF && score(IDX_RE) > ARM_CONF && score(IDX_RW) > ARM_CONF;
+
       const lAngle = lOk
         ? calcAngle(kx(IDX_LS), ky(IDX_LS), kx(IDX_LE), ky(IDX_LE), kx(IDX_LW), ky(IDX_LW))
         : 180;
@@ -157,10 +185,7 @@ export default function StartTabScreen() {
         ? calcAngle(kx(IDX_RS), ky(IDX_RS), kx(IDX_RE), ky(IDX_RE), kx(IDX_RW), ky(IDX_RW))
         : 180;
 
-      // 손목이 충분히 명확하면 '손 감지'로 간주
-      const handDetected = score(IDX_LW) > HAND || score(IDX_RW) > HAND;
-
-      runOnJS(onPoseData)(handDetected, lAngle, rAngle);
+      runOnJS(onPoseData)(visibleCount, maxScore, lAngle, rAngle);
     },
     [model, onPoseData]
   );
@@ -236,20 +261,35 @@ export default function StartTabScreen() {
       {/* ────────── WAITING ────────── */}
       {phase === "WAITING" && (
         <>
-          <View style={[styles.topSection, { paddingTop: insets.top + 48 }]}>
-            <Text style={styles.guideText}>손바닥을 카메라에 보여주세요</Text>
+          <View style={[styles.topSection, { paddingTop: insets.top + 32 }]}>
+            <Text style={styles.guideText}>카메라에서 1~2m 거리에서{"\n"}상체가 보이도록 서주세요</Text>
           </View>
+
           <View style={styles.middleSection}>
             <View style={styles.circleOuter}>
               <Animated.View style={[styles.circleInner, { opacity: pulse }]} />
             </View>
-            <Text style={styles.waitingText}>손바닥 인식 대기 중...</Text>
+
+            {/* 모델 상태 */}
             {model.state === "loading" && (
               <Text style={styles.modelLoadText}>⏳ AI 모델 준비 중...</Text>
             )}
             {model.state === "error" && (
               <Text style={styles.modelErrorText}>⚠ 모델 로딩 실패</Text>
             )}
+            {model.state === "loaded" && (
+              <Text style={styles.debugText}>{debugText}</Text>
+            )}
+          </View>
+
+          {/* 직접 시작 버튼 (자동 인식 안 될 때 백업) */}
+          <View style={[styles.manualStartWrap, { paddingBottom: insets.bottom + 100 }]}>
+            <Pressable
+              style={({ pressed }) => [styles.manualStartBtn, pressed && { opacity: 0.8 }]}
+              onPress={startManually}
+            >
+              <Text style={styles.manualStartText}>직접 시작하기</Text>
+            </Pressable>
           </View>
         </>
       )}
@@ -379,6 +419,15 @@ const styles = StyleSheet.create({
   waitingText:    { color: GREEN, fontSize: 14, fontWeight: "600", letterSpacing: 0.5 },
   modelLoadText:  { color: "rgba(255,255,255,0.45)", fontSize: 12, fontWeight: "500" },
   modelErrorText: { color: "#ff3b30", fontSize: 12, fontWeight: "600" },
+  debugText:      { color: "rgba(255,255,255,0.5)", fontSize: 12, fontWeight: "500", textAlign: "center", paddingHorizontal: 24 },
+
+  manualStartWrap: { paddingHorizontal: 32, width: "100%" },
+  manualStartBtn: {
+    borderWidth: 1.5, borderColor: GREEN,
+    borderRadius: 14, paddingVertical: 14,
+    alignItems: "center",
+  },
+  manualStartText: { color: GREEN, fontSize: 15, fontWeight: "700" },
 
   /* READY */
   bigEmoji:  { fontSize: 72 },
