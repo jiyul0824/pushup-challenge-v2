@@ -19,20 +19,17 @@ const GREEN  = "#00C853";
 const ORANGE = "#f97316";
 const BG     = "#0a0a0a";
 
-// ─── 상태 타입 ───
 type Phase     = "WAITING" | "READY" | "COUNTDOWN" | "COUNTING" | "DONE";
 type PoseState = "UP" | "DOWN" | "NONE";
 
-// ─── MoveNet keypoint 인덱스 (COCO 순서) ───
-// 5=L.Shoulder  6=R.Shoulder  7=L.Elbow  8=R.Elbow  9=L.Wrist  10=R.Wrist
-const IDX_LS = 5, IDX_RS = 6;
-const IDX_LE = 7, IDX_RE = 8;
-const IDX_LW = 9, IDX_RW = 10;
+// MoveNet keypoint 인덱스 (COCO 순서)
+const IDX_LS = 5, IDX_RS = 6; // shoulders
+const IDX_LE = 7, IDX_RE = 8; // elbows
+const IDX_LW = 9, IDX_RW = 10; // wrists
 
-// ─── 세 점으로 각도 계산 (worklet에서 사용) ───
 function calcAngle(
   ax: number, ay: number,
-  bx: number, by: number, // 꼭짓점 (팔꿈치)
+  bx: number, by: number,
   cx: number, cy: number,
 ): number {
   "worklet";
@@ -44,14 +41,12 @@ function calcAngle(
   return (Math.acos(Math.max(-1, Math.min(1, dot / mag))) * 180) / Math.PI;
 }
 
-// ─────────────────────────────────────────
 export default function StartTabScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice("front");
 
-  // ── 상태 ──
   const [phase,      setPhase]      = useState<Phase>("WAITING");
   const [countdown,  setCountdown]  = useState(3);
   const [count,      setCount]      = useState(0);
@@ -59,16 +54,13 @@ export default function StartTabScreen() {
   const [elbowAngle, setElbowAngle] = useState(180);
   const [debugText,  setDebugText]  = useState("카메라 분석 중...");
 
-  // worklet → JS 간 stale closure 방지용 ref
   const phaseRef     = useRef<Phase>("WAITING");
   const poseStateRef = useRef<PoseState>("NONE");
   const countRef     = useRef(0);
 
-  // ── 애니메이션 ──
   const pulse      = useRef(new Animated.Value(1)).current;
   const countScale = useRef(new Animated.Value(1)).current;
 
-  // 대기 중 펄스
   useEffect(() => {
     if (phase !== "WAITING") return;
     const anim = Animated.loop(
@@ -81,11 +73,10 @@ export default function StartTabScreen() {
     return () => anim.stop();
   }, [phase, pulse]);
 
-  // 카운트 바운스
-  const bouncCount = useCallback(() => {
+  const bounceCount = useCallback(() => {
     Animated.sequence([
-      Animated.timing(countScale,  { toValue: 1.4, duration: 80,  useNativeDriver: true }),
-      Animated.spring(countScale,  { toValue: 1,   useNativeDriver: true, damping: 5, stiffness: 300 }),
+      Animated.timing(countScale, { toValue: 1.4, duration: 80, useNativeDriver: true }),
+      Animated.spring(countScale, { toValue: 1,   useNativeDriver: true, damping: 5, stiffness: 300 }),
     ]).start();
   }, [countScale]);
 
@@ -95,17 +86,15 @@ export default function StartTabScreen() {
     require("../../assets/models/movenet_lightning.tflite")
   );
 
-  // ── fast-tflite v3: NitroModules.box() 로 worklet 접근 가능하게 래핑 ──
+  // ── nitro-modules box: worklet 스레드에서 모델 접근 가능하게 ──
   const boxedModel = useMemo(
     () => (plugin.state === "loaded" ? NitroModules.box(plugin.model) : undefined),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [plugin.state]
   );
 
-  // ── vision-camera-resize-plugin 초기화 ──
   const { resize } = useResizePlugin();
 
-  // 수동 시작 함수
   const startManually = useCallback(() => {
     if (phaseRef.current !== "WAITING") return;
     phaseRef.current = "READY";
@@ -113,13 +102,12 @@ export default function StartTabScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   }, []);
 
-  // ── 프레임 처리 결과 → JS 스레드 콜백 ──
+  // ── pose 데이터 → JS 스레드 처리 ──
   const onPoseData = useCallback(
     (visibleCount: number, maxScore: number, lAngle: number, rAngle: number) => {
       const elbow = Math.min(lAngle, rAngle);
       setElbowAngle(Math.round(elbow));
 
-      // ① WAITING: 디버그 텍스트 업데이트
       if (phaseRef.current === "WAITING") {
         if (visibleCount === 0) {
           setDebugText("인식 없음 — 카메라와 1~2m 거리에서 정면을 보세요");
@@ -134,7 +122,6 @@ export default function StartTabScreen() {
         return;
       }
 
-      // ② COUNTING: 팔꿈치 각도로 UP/DOWN 판정
       if (phaseRef.current !== "COUNTING") return;
 
       if (elbow < 90 && poseStateRef.current !== "DOWN") {
@@ -146,11 +133,11 @@ export default function StartTabScreen() {
         setPoseState("UP");
         countRef.current += 1;
         setCount(countRef.current);
-        bouncCount();
+        bounceCount();
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
     },
-    [bouncCount]
+    [bounceCount]
   );
 
   // ── 프레임 프로세서 ──
@@ -159,58 +146,50 @@ export default function StartTabScreen() {
       "worklet";
       if (boxedModel == null) return;
 
-      // 1. 프레임을 192×192 RGB uint8로 리사이즈
+      // 192×192 RGB uint8로 리사이즈
       const resized = resize(frame, {
         scale: { width: 192, height: 192 },
         pixelFormat: "rgb",
         dataType: "uint8",
       });
 
-      // 2. TypedArray → 슬라이스된 ArrayBuffer 추출 (byteOffset 보정)
+      // TypedArray → slice (byteOffset 보정)
       const inputBuffer = resized.buffer.slice(
         resized.byteOffset,
         resized.byteOffset + resized.byteLength
       );
 
-      // 3. model unbox → runSync
-      const tflite = boxedModel.unbox();
+      const tflite  = boxedModel.unbox();
       const outputs = tflite.runSync([inputBuffer]);
 
-      // 4. MoveNet 출력 파싱: shape [1,1,17,3] → Float32 51개 값
-      const raw  = outputs[0];
+      const raw = outputs[0];
       if (raw == null) return;
-      const kps  = new Float32Array(raw);
+      const kps = new Float32Array(raw);
 
       const score = (i: number) => kps[i * 3 + 2];
-      const kx    = (i: number) => kps[i * 3 + 1]; // x
-      const ky    = (i: number) => kps[i * 3];      // y
+      const kx    = (i: number) => kps[i * 3 + 1];
+      const ky    = (i: number) => kps[i * 3];
 
-      const CONF = 0.20;
-      let visibleCount = 0;
-      let maxScore = 0;
+      let visibleCount = 0, maxScore = 0;
       for (let i = 0; i < 17; i++) {
         const s = score(i);
-        if (s > CONF) visibleCount++;
+        if (s > 0.20) visibleCount++;
         if (s > maxScore) maxScore = s;
       }
 
-      const ARM_CONF = 0.25;
-      const lOk = score(IDX_LS) > ARM_CONF && score(IDX_LE) > ARM_CONF && score(IDX_LW) > ARM_CONF;
-      const rOk = score(IDX_RS) > ARM_CONF && score(IDX_RE) > ARM_CONF && score(IDX_RW) > ARM_CONF;
+      const ARM = 0.25;
+      const lOk = score(IDX_LS) > ARM && score(IDX_LE) > ARM && score(IDX_LW) > ARM;
+      const rOk = score(IDX_RS) > ARM && score(IDX_RE) > ARM && score(IDX_RW) > ARM;
 
-      const lAngle = lOk
-        ? calcAngle(kx(IDX_LS), ky(IDX_LS), kx(IDX_LE), ky(IDX_LE), kx(IDX_LW), ky(IDX_LW))
-        : 180;
-      const rAngle = rOk
-        ? calcAngle(kx(IDX_RS), ky(IDX_RS), kx(IDX_RE), ky(IDX_RE), kx(IDX_RW), ky(IDX_RW))
-        : 180;
+      const lAngle = lOk ? calcAngle(kx(IDX_LS), ky(IDX_LS), kx(IDX_LE), ky(IDX_LE), kx(IDX_LW), ky(IDX_LW)) : 180;
+      const rAngle = rOk ? calcAngle(kx(IDX_RS), ky(IDX_RS), kx(IDX_RE), ky(IDX_RE), kx(IDX_RW), ky(IDX_RW)) : 180;
 
       runOnJS(onPoseData)(visibleCount, maxScore, lAngle, rAngle);
     },
     [boxedModel, resize, onPoseData]
   );
 
-  // ── READY → COUNTDOWN (1.2초 후) ──
+  // READY → COUNTDOWN
   useEffect(() => {
     if (phase !== "READY") return;
     const t = setTimeout(() => {
@@ -221,13 +200,13 @@ export default function StartTabScreen() {
     return () => clearTimeout(t);
   }, [phase]);
 
-  // ── COUNTDOWN 1초마다 감소 → COUNTING ──
+  // COUNTDOWN → COUNTING
   useEffect(() => {
     if (phase !== "COUNTDOWN") return;
     if (countdown <= 0) {
-      phaseRef.current = "COUNTING";
+      phaseRef.current     = "COUNTING";
       poseStateRef.current = "NONE";
-      countRef.current = 0;
+      countRef.current     = 0;
       setPhase("COUNTING");
       setPoseState("NONE");
       setCount(0);
@@ -268,7 +247,6 @@ export default function StartTabScreen() {
     <View style={styles.root}>
       <StatusBar style="light" hidden />
 
-      {/* ── 카메라 (전체 화면) ── */}
       <Camera
         style={StyleSheet.absoluteFill}
         device={device}
@@ -278,30 +256,20 @@ export default function StartTabScreen() {
       />
       <View style={styles.overlay} />
 
-      {/* ────────── WAITING ────────── */}
+      {/* WAITING */}
       {phase === "WAITING" && (
         <>
           <View style={[styles.topSection, { paddingTop: insets.top + 32 }]}>
             <Text style={styles.guideText}>카메라에서 1~2m 거리에서{"\n"}상체가 보이도록 서주세요</Text>
           </View>
-
           <View style={styles.middleSection}>
             <View style={styles.circleOuter}>
               <Animated.View style={[styles.circleInner, { opacity: pulse }]} />
             </View>
-
-            {plugin.state === "loading" && (
-              <Text style={styles.modelLoadText}>⏳ AI 모델 준비 중...</Text>
-            )}
-            {plugin.state === "error" && (
-              <Text style={styles.modelErrorText}>⚠ 모델 로딩 실패</Text>
-            )}
-            {plugin.state === "loaded" && (
-              <Text style={styles.debugText}>{debugText}</Text>
-            )}
+            {plugin.state === "loading" && <Text style={styles.modelLoadText}>⏳ AI 모델 준비 중...</Text>}
+            {plugin.state === "error"   && <Text style={styles.modelErrorText}>⚠ 모델 로딩 실패</Text>}
+            {plugin.state === "loaded"  && <Text style={styles.debugText}>{debugText}</Text>}
           </View>
-
-          {/* 직접 시작 버튼 */}
           <View style={[styles.manualStartWrap, { paddingBottom: insets.bottom + 100 }]}>
             <Pressable
               style={({ pressed }) => [styles.manualStartBtn, pressed && { opacity: 0.8 }]}
@@ -313,7 +281,7 @@ export default function StartTabScreen() {
         </>
       )}
 
-      {/* ────────── READY ────────── */}
+      {/* READY */}
       {phase === "READY" && (
         <View style={styles.middleSection}>
           <Text style={styles.bigEmoji}>✅</Text>
@@ -322,7 +290,7 @@ export default function StartTabScreen() {
         </View>
       )}
 
-      {/* ────────── COUNTDOWN ────────── */}
+      {/* COUNTDOWN */}
       {phase === "COUNTDOWN" && (
         <View style={styles.middleSection}>
           <Text style={styles.countdownNum}>{countdown}</Text>
@@ -330,7 +298,7 @@ export default function StartTabScreen() {
         </View>
       )}
 
-      {/* ────────── COUNTING ────────── */}
+      {/* COUNTING */}
       {phase === "COUNTING" && (
         <>
           <View style={[styles.topSection, { paddingTop: insets.top + 16 }]}>
@@ -340,20 +308,14 @@ export default function StartTabScreen() {
                 ? { backgroundColor: "rgba(249,115,22,0.18)", borderColor: ORANGE }
                 : { backgroundColor: "rgba(0,200,83,0.18)",   borderColor: GREEN  },
             ]}>
-              <Text style={[
-                styles.stateText,
-                { color: poseState === "DOWN" ? ORANGE : GREEN },
-              ]}>
+              <Text style={[styles.stateText, { color: poseState === "DOWN" ? ORANGE : GREEN }]}>
                 {poseState === "DOWN" ? "⬇  DOWN" : poseState === "UP" ? "⬆  UP" : "시작!"}
               </Text>
             </View>
             <Text style={styles.angleText}>팔꿈치 각도  {elbowAngle}°</Text>
           </View>
-
           <View style={styles.middleSection}>
-            <Animated.Text
-              style={[styles.bigCount, { transform: [{ scale: countScale }] }]}
-            >
+            <Animated.Text style={[styles.bigCount, { transform: [{ scale: countScale }] }]}>
               {count}
             </Animated.Text>
             <Text style={styles.bigCountUnit}>개</Text>
@@ -361,7 +323,7 @@ export default function StartTabScreen() {
         </>
       )}
 
-      {/* ────────── DONE ────────── */}
+      {/* DONE */}
       {phase === "DONE" && (
         <View style={styles.middleSection}>
           <Text style={styles.bigEmoji}>🎉</Text>
@@ -372,38 +334,27 @@ export default function StartTabScreen() {
         </View>
       )}
 
-      {/* ────────── 하단 버튼 ────────── */}
+      {/* 하단 버튼 */}
       <View style={[styles.bottomSection, { paddingBottom: insets.bottom + 24 }]}>
         {phase === "COUNTING" && (
           <Pressable
             style={({ pressed }) => [styles.doneBtn, pressed && { opacity: 0.85 }]}
-            onPress={() => {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              phaseRef.current = "DONE";
-              setPhase("DONE");
-            }}
+            onPress={() => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); phaseRef.current = "DONE"; setPhase("DONE"); }}
           >
             <Text style={styles.doneBtnText}>완료 ({count}개)</Text>
           </Pressable>
         )}
-
         {phase === "DONE" ? (
           <Pressable
             style={({ pressed }) => [styles.doneBtn, pressed && { opacity: 0.85 }]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              router.replace("/(tabs)/home");
-            }}
+            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); router.replace("/(tabs)/home"); }}
           >
             <Text style={styles.doneBtnText}>홈으로 돌아가기</Text>
           </Pressable>
         ) : (
           <Pressable
             style={({ pressed }) => [styles.cancelBtn, pressed && { opacity: 0.7 }]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.back();
-            }}
+            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.back(); }}
           >
             <Text style={styles.cancelText}>취소</Text>
           </Pressable>
@@ -413,7 +364,6 @@ export default function StartTabScreen() {
   );
 }
 
-// ─────────────────────────────────────────
 const styles = StyleSheet.create({
   root:    { flex: 1, backgroundColor: BG },
   center:  { alignItems: "center", justifyContent: "center", paddingHorizontal: 32, gap: 20 },
@@ -426,17 +376,13 @@ const styles = StyleSheet.create({
   guideText: { color: "#fff", fontSize: 18, fontWeight: "700", textAlign: "center", letterSpacing: 0.3 },
 
   circleOuter:    { width: 120, height: 120, borderRadius: 60, borderWidth: 3, borderColor: GREEN, alignItems: "center", justifyContent: "center" },
-  circleInner:    { width: 90, height: 90, borderRadius: 45, backgroundColor: GREEN },
+  circleInner:    { width: 90,  height: 90,  borderRadius: 45, backgroundColor: GREEN },
   modelLoadText:  { color: "rgba(255,255,255,0.45)", fontSize: 12, fontWeight: "500" },
   modelErrorText: { color: "#ff3b30", fontSize: 12, fontWeight: "600" },
   debugText:      { color: "rgba(255,255,255,0.5)", fontSize: 12, fontWeight: "500", textAlign: "center", paddingHorizontal: 24 },
 
   manualStartWrap: { paddingHorizontal: 32, width: "100%" },
-  manualStartBtn: {
-    borderWidth: 1.5, borderColor: GREEN,
-    borderRadius: 14, paddingVertical: 14,
-    alignItems: "center",
-  },
+  manualStartBtn:  { borderWidth: 1.5, borderColor: GREEN, borderRadius: 14, paddingVertical: 14, alignItems: "center" },
   manualStartText: { color: GREEN, fontSize: 15, fontWeight: "700" },
 
   bigEmoji:  { fontSize: 72 },

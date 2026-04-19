@@ -45,6 +45,7 @@
           "enableFrameProcessors": true
         }
       ],
+      "react-native-fast-tflite",
       [
         "expo-splash-screen",
         {
